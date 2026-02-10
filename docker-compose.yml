@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: 'confluentinc/cp-zookeeper:7.3.0'
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: 'confluentinc/cp-kafka:7.3.0'
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: nc -z kafka 9092 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: postgres:15
+    hostname: db
+    container_name: postgres_db
+    ports:
+      - "${DB_PORT}:5432"
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  producer-api:
+    build:
+      context: ./services/producer_api
+      dockerfile: Dockerfile
+    hostname: producer-api
+    container_name: producer_api
+    ports:
+      - "${PRODUCER_API_PORT}:${PRODUCER_API_PORT}"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_URL: ${KAFKA_BROKER_URL}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      PRODUCER_API_PORT: ${PRODUCER_API_PORT}
+      PRODUCER_API_HOST: ${PRODUCER_API_HOST}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PRODUCER_API_PORT}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  consumer-service:
+    build:
+      context: ./services/consumer_service
+      dockerfile: Dockerfile
+    hostname: consumer-service
+    container_name: consumer_service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_URL: ${KAFKA_BROKER_URL}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      CONSUMER_HEALTH_PORT: ${CONSUMER_HEALTH_PORT}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${CONSUMER_HEALTH_PORT}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data:
